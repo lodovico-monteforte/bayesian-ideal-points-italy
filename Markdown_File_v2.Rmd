@@ -1,0 +1,911 @@
+---
+title: "Bayesian Ideal Point Estimation of the Italian Chamber of Deputies"
+author: "Lodovico Monteforte"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    theme: readable
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.width = 10, fig.height = 6)
+library(pscl)
+library(ggplot2)
+library(coda)
+library(tidyr)
+library(dplyr)
+library(patchwork)
+library(knitr)
+library(scales)
+```
+
+---
+
+## Introduction
+
+This project estimates the ideological positions of members of the Italian
+Chamber of Deputies using the Bayesian ideal point model introduced by Clinton,
+Jackman and Rivers (2004).^[Clinton, J., Jackman, S., & Rivers, D. (2004).
+The Statistical Analysis of Roll Call Data. *American Political Science Review*,
+98(2), 355–370. https://doi.org/10.1017/S0003055404001194] The method recovers
+latent ideological positions — ideal points — from the observed pattern of
+Yea/Nay votes on roll calls, treating the voting record as data and ideology as
+an unobserved quantity to be estimated.
+
+The Italian institutional setting offers a particularly rich testing ground.
+The Chamber has 400 members (compared to 100 in the US Senate), supports a
+highly fragmented multi-party system, and has experienced substantial
+governmental instability across legislatures. In practice this means that the relative distance
+between any two candidates changes as new government coalitions come into being.  
+Two legislatures are analysed:
+
+- XIX Legislature (13 October 2022 — present): the current centre-right
+  government led by Giorgia Meloni, with a clear and stable majority coalition.
+  This serves as a baseline case where a strong ideological separation is
+  expected a priori.
+
+- XVIII Legislature (23 March 2018 — 12 October 2022): a more complex case
+  involving three distinct governments (the M5S-Lega coalition, the
+  M5S-PD-IV coalition, and the Draghi technocratic government).
+
+The analysis is carried out using the `pscl` package^[https://rdocumentation.org/packages/pscl/versions/1.5.9]
+by Simon Jackman — one of the original authors of the paper — which implements
+a Gibbs sampler. The following sections present the
+theoretical foundations of the model, the data pipeline, and the results for
+both legislatures.
+
+---
+
+## Theory
+
+### The Spatial Voting Model
+
+A classical building block of positive political theory is the **spatial voting
+model**. Each legislator is modelled as a rational utility maximiser with an
+ideal point in a $d$-dimensional policy space: a point representing their
+most preferred policy position. The closer a proposed policy is to a
+legislator's ideal point, the higher their utility from supporting it.
+
+We assume $n$ legislators vote on $m$ roll calls. For each roll call $j$,
+legislator $i$ chooses between a Yea position ($\zeta_j$) and a Nay position
+($\psi_j$) in the policy space. The utility functions are:
+
+$$U_i(\zeta_j) = -\|x_i - \zeta_j\|^2 + \eta_{ij}$$
+$$U_i(\psi_j) = -\|x_i - \psi_j\|^2 + \nu_{ij}$$
+
+where $x_i \in \mathbb{R}^d$ is the ideal point of legislator $i$, and
+$\eta_{ij}$, $\nu_{ij}$ are stochastic error terms capturing unobserved
+utility. A legislator votes Yea ($y_{ij} = 1$) if:
+
+$$P(y_{ij} = 1) = P(U_i(\zeta_j) > U_i(\psi_j))$$
+
+
+Expanding the Euclidean distance terms
+($\|a - b\|^2 = a'a - 2a'b + b'b$):
+
+$$\|x_i - \psi_j\|^2 - \|x_i - \zeta_j\|^2 = 2(\zeta_j - \psi_j)'x_i +
+\psi_j'\psi_j - \zeta_j'\zeta_j$$
+
+Assuming the error difference $\epsilon_{ij} = \nu_{ij} - \eta_{ij}$ is
+distributed $N(0, \sigma_j^2)$ and normalising by $\sigma_j$:
+
+$$P(y_{ij} = 1) = \Phi \left(
+\frac{2(\zeta_j - \psi_j)'}{\sigma_j}x_i -
+\frac{\zeta_j'\zeta_j - \psi_j'\psi_j}{\sigma_j}
+\right)$$
+
+We now define:
+
+- $\beta_j = \frac{2(\zeta_j - \psi_j)}{\sigma_j}$: as the discrimination
+  parameter, capturing how strongly vote $j$ separates legislators along
+  the ideological dimension. A large $|\beta_j|$ indicates a highly
+  partisan vote; a near-zero $\beta_j$ indicates a vote on which ideology
+  plays little role.
+
+- $\alpha_j = \frac{\zeta_j'\zeta_j - \psi_j'\psi_j}{\sigma_j}$: the
+  difficulty parameter, capturing the overall propensity to vote Yea
+  regardless of ideology.
+
+The probability of a Yea vote becomes a standard probit model:
+
+$$P(y_{ij} = 1) = \Phi(x_i'\beta_j - \alpha_j)$$
+
+With the joint likelihood for the observed vote matrix $Y$, assuming independence
+across legislators and roll calls, is:
+
+$$L(\mathbf{B}, \alpha, \mathbf{X} \mid Y) = \prod_{i=1}^{n} \prod_{j=1}^{m}
+\Phi(x_i'\beta_j - \alpha_j)^{y_{ij}}
+\left[1 - \Phi(x_i'\beta_j - \alpha_j)\right]^{1 - y_{ij}}$$
+
+where $\mathbf{X}$ is the $n \times d$ matrix of ideal points and $\mathbf{B}$
+is the $m \times d$ matrix of discrimination parameters.
+
+Clinton et al. (2004) notice that the posterior
+$p(\mathbf{X}, \mathbf{B}, \alpha \mid Y)$ has a tractable conditional
+structure under conjugate priors, enabling estimation via Gibbs sampling.
+
+The Gibbs sampler iteratively draws from the conditional posteriors:
+
+1. For $t = 1$ to $T$:
+2. Sample $x_i^{(t+1)}$ from $p(x_i \mid \mathbf{B}^{(t)}, \alpha^{(t)}, Y)$
+   for all $i$
+3. Sample $(\beta_j^{(t+1)}, \alpha_j^{(t+1)})$ from
+   $p(\beta_j, \alpha_j \mid \mathbf{X}^{(t+1)}, Y)$ for all $j$
+4. Update $\theta^{(t+1)} \leftarrow (x^{(t+1)}, \beta^{(t+1)}, \alpha^{(t+1)})$
+
+What makes it tractable here is the Albert-Chib data
+augmentation: by introducing latent continuous variables $z_{ij}$ such that
+$y_{ij} = \mathbf{1}[z_{ij} > 0]$ with $z_{ij} \sim N(x_i'\beta_j - \alpha_j, 1)$,
+the conditional posteriors for both ideal points and bill parameters become
+Gaussian, enabling closed-form sampling at each step.
+
+### Identification
+
+The model has two sources of non-identification:
+
+1. **Sign flip**: multiplying all $x_i$ by $-1$ and all $\beta_j$ by $-1$
+   leaves the likelihood unchanged.
+2. **Scale**: multiplying all ideal points by a constant $c$ and dividing
+   all $\beta_j$ by $c$ leaves the likelihood unchanged.
+
+Both are resolved by fixing the ideal points of two legislators to known
+values. We use **Fratoianni Nicola** (left, fixed at $-1$) and
+**Lollobrigida Francesco** (right, fixed at $+1$) as anchors. Both are
+long-serving members of their respective parties with stable and well-known
+ideological positions, making them suitable anchor choices.
+---
+
+## Data
+
+### Source and Scraping Pipeline
+
+Vote data was obtained from the Italian Chamber of Deputies open data portal
+(`dati.camera.it`).
+For each legislature, we queried all final votes (`votazioneFinale = 1`),
+excluding procedural votes. For each vote, we retrieved the legislator's name,
+vote expression (Yea/Nay/Abstain), and party group affiliation at the date of
+the vote — the latter using date filters to correctly assign party membership
+for legislators who switched groups mid-legislature.
+
+The scraping pipeline is implemented in Python and supports automatic resume
+on interruption. The full scrape takes approximately 20 minutes per
+legislature.
+
+### Preprocessing
+
+The raw dataset (one row per legislator per vote) was transformed into a
+legislator × vote binary matrix where 1 = Yea, 0 = Nay, and NA = absent
+or abstaining. Party names were standardised from the verbose raw labels to
+short identifiers (e.g. `"FRATELLI D'ITALIA (FDI) (18.10.2022"` → `"FdI"`).
+
+Legislators who switched party mid-legislature were collapsed onto a single
+identifier, retaining their full voting record but assigned to their last
+party of affiliation. In theory this could create outliers for extreme
+party-switchers, but such cases should be rare and do not affect model mechanics
+since ideal points are estimated from votes, not party labels.
+
+### Sample Reduction
+
+Before estimation, the `pscl::ideal` function applies a lop filter
+(`lop = 0.05`): roll calls where fewer than 5% of legislators voted on
+the minority side are dropped as uninformative. The table below reports
+the approximate effect of this filter on both datasets. 
+
+```{r sample-reduction}
+red_18 <- read.csv("sample_reduction_18.csv")
+red_19 <- read.csv("sample_reduction_19.csv")
+reduction_df <- rbind(red_19, red_18)
+
+knitr::kable(reduction_df,
+             col.names = c("Legislature", "Legislators (raw)",
+                           "Legislators (no votes)",
+                           "Votes (raw)", "Votes dropped (lop < 0.05)",
+                           "Votes kept"),
+             caption = paste("Sample reduction after lop = 0.05 filter.",
+                             "Note: counts are approximate — exact filtering",
+                             "is performed by ideal() in R."))
+```
+
+---
+
+## Results: XIX Legislature (2022–present)
+
+```{r load-19, cache=TRUE}
+load("session_19.RData")
+load("sensitivity_19.RData")
+
+all_parties <- sort(unique(c(
+  "FdI", "FI", "IPF-IC", "M5S", "MISTO", "IV", "Lega", "PD", "LEU-ART1-SI",
+  "PD-IDP", "AZ-PER-RE", "AVS", "IV-C-RE", "NM"
+)))
+
+master_colors <- setNames(
+  scales::viridis_pal(option = "turbo")(length(all_parties)),
+  all_parties
+)
+```
+
+### Ideological Distribution
+
+```{r plot-a-19, fig.cap="Posterior mean ideal points for all XIX legislature members. Vertical jitter is purely cosmetic to avoid overplotting. The vertical line marks the ideological centre (0)."}
+plot_df_19 <- data.frame(
+  legis.name = rownames(id_19$xbar),
+  Estimate   = as.numeric(id_19$xbar[, 1]),
+  stringsAsFactors = FALSE
+)
+plot_df_19 <- merge(plot_df_19, data19[, c("legis.name", "partito")],
+                    by = "legis.name", all.x = TRUE)
+
+set.seed(42)
+ggplot(plot_df_19, aes(x = Estimate, y = 0, color = partito)) +
+  geom_jitter(size = 2, alpha = 0.65, height = 0.15) +
+  geom_hline(yintercept = 0, linetype = "dotted", color = "gray50") +
+  geom_vline(xintercept = 0, linewidth = 0.8, color = "black") +
+  scale_color_manual(values = master_colors) +
+  theme_minimal() +
+  labs(title    = "Ideological Distribution — XIX Legislature",
+       subtitle = "Posterior means | Anchors: Fratoianni = -1, Lollobrigida = +1",
+       x        = "← Left          Right →",
+       y        = "", color = "Party") +
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+        panel.grid.major.y = element_blank(), legend.position = "bottom")
+```
+
+The model recovers a clean left-right separation consistent with the known
+political landscape of the XIX legislature. The right-wing governing coalition
+(FdI, Lega, FI, NM) clusters compactly on the right, while the opposition
+(PD-IDP, AVS, M5S) occupies the left. AVS is correctly placed further left
+than PD-IDP. The M5S occupies a hard-left position.
+
+### Bill Parameters
+
+Another parameter of interest is the discrimination parameter $\beta_j$. This measures
+how strongly each vote separates left from right legislators. Its distribution tells us
+how well voting patterns map onto a single ideological axis, and whether a single
+ideological dimension is sufficient to explain voting behaviour. A concentration of
+near-zero $\beta_j$ values would indicate that many votes carry little ideological
+signal; systematic departures from a unimodal legislator distribution would instead
+suggest the need for an additional dimension beyond left and right.
+
+
+
+```{r plot-d-19, fig.width=12, fig.height=5, fig.cap="Left: distribution of bill discrimination parameters. Right: discrimination vs difficulty for all votes."}
+beta_df_19 <- data.frame(
+  vote_id = 1:nrow(id_19$betabar),
+  beta    = id_19$betabar[, 1],
+  alpha   = id_19$betabar[, 2]
+)
+noisy_pct_19 <- round(mean(abs(beta_df_19$beta) < 0.5) * 100, 1)
+
+p_hist <- ggplot(beta_df_19, aes(x = beta)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 50, fill = "steelblue", color = "white", alpha = 0.6) +
+  geom_density(color = "black", linewidth = 0.8, adjust = 1.5) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red", linewidth = 0.8) +
+  theme_minimal() +
+  labs(title    = "Distribution of β (XIX)",
+       subtitle = paste0("Votes with |β| < 0.5: ", noisy_pct_19, "%"),
+       x = "β (Discrimination)", y = "Density")
+
+hull_idx_19 <- chull(beta_df_19$beta, beta_df_19$alpha)
+hull_df_19  <- beta_df_19[hull_idx_19, ]
+
+p_scatter <- ggplot(beta_df_19, aes(x = beta, y = alpha)) +
+  geom_polygon(data = hull_df_19, fill = "steelblue", alpha = 0.15,
+               color = "steelblue", linewidth = 0.5) +
+  geom_point(alpha = 0.3, size = 1.2, color = "steelblue") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red", linewidth = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", linewidth = 0.6) +
+  theme_minimal() +
+  labs(title    = "β vs α (XIX)",
+       subtitle = "Each point is one roll-call vote",
+       x = "β (Discrimination)", y = "α (Difficulty)")
+
+p_hist + p_scatter
+```
+
+In our data, the trimodal structure of the $\beta$ distribution reflects three
+behavioural types of votes: highly partisan votes driven by the right-wing majority
+(large positive $\beta$), opposition-sponsored votes where the left consistently votes
+Yea and the right Nay (large negative $\beta$), and procedural or consensus votes where
+ideology plays little role (near-zero $\beta$). Only `r noisy_pct_19`% of votes have
+$|\beta| < 0.5$, indicating that the 1D specification captures the vast majority of the
+ideological signal in the data.
+
+Figure X plots $\beta$ against $\alpha$. A large share of votes falls in the first
+quadrant, combining high discrimination with a Yea being the the majority-favored outcome. 
+This is coherent with the relative strength and cohesion of the current government.
+
+
+### A side note on convergence and party mechanics
+
+The model was run for 150,000 iterations. Assessing convergence via the Geweke
+diagnostic — which tests whether the mean of the first 10% of the chain equals
+the mean of the last 50% — reveals that a large share of individual ideal point
+parameters do not converge (see table below). This is a known limitation of the
+model: we have to assume non strategic, truthful voting. 
+In a setting like the Italian parliament operates under strong party whipping, producing
+low heterogeneity in voting behaviour within parties and making precise
+estimation of *individual* ideal points difficult regardless of chain length.
+Nevertheless, the estimates remain informative about the relative positioning of
+parties along the left-right spectrum. Since legislators within the same party
+vote near-identically, what the model recovers is a reliable signal of
+*inter-party* ideological distances, which is the quantity of primary interest
+in our analysis.
+
+```{r geweke-19, cache=TRUE}
+leg_19   <- as.mcmc(id_19$x[, , 1])
+beta_19  <- as.mcmc(id_19$beta[, , 1])
+alpha_19 <- as.mcmc(id_19$beta[, , 2])
+
+gw_leg_19   <- geweke.diag(leg_19)
+gw_beta_19  <- geweke.diag(beta_19)
+gw_alpha_19 <- geweke.diag(alpha_19)
+
+geweke_df_19 <- data.frame(
+  Parameter  = c("Ideal Points", "β (Discrimination)", "α (Difficulty)"),
+  Total      = c(id_19$n, id_19$m, id_19$m),
+  Failed     = c(sum(abs(gw_leg_19$z)   > 1.96),
+                 sum(abs(gw_beta_19$z)  > 1.96),
+                 sum(abs(gw_alpha_19$z) > 1.96)),
+  Pass_Rate  = paste0(round((1 - c(
+                 mean(abs(gw_leg_19$z)   > 1.96),
+                 mean(abs(gw_beta_19$z)  > 1.96),
+                 mean(abs(gw_alpha_19$z) > 1.96))) * 100, 1), "%")
+)
+
+knitr::kable(geweke_df_19,
+             col.names = c("Parameter", "Total", "Failed (|Z| > 1.96)",
+                           "Pass Rate"),
+             caption = "Geweke Convergence Diagnostics — XIX Legislature (1D)")
+```
+
+An important caveat applies to legislators with very few recorded votes. A
+striking case is Prime Minister Giorgia Meloni, who cast no votes in this
+legislature — a common pattern among Prime Ministers. With no data, the
+posterior is entirely determined by the prior $\mathcal{N}(0, 1)$, and the
+chain will appear to converge trivially since it never moves away from the
+prior. Her Geweke Z-score is
+`r round(gw_leg_19$z[grep("MELONI GIORGIA", names(gw_leg_19$z))], 3)`,
+which is
+`r ifelse(abs(gw_leg_19$z[grep("MELONI GIORGIA", names(gw_leg_19$z))]) < 1.96, "below", "above")`
+the 1.96 threshold — a formally convergent but entirely uninformative result.
+
+```{r trace-19, fig.width=12, fig.height=5, fig.cap="Trace plots for Meloni (no data, prior-dominated)."}
+idx_meloni   <- grep("MELONI GIORGIA",   colnames(leg_19))
+
+par(mfrow = c(1, 2))
+coda::traceplot(leg_19[, idx_meloni],
+                main = "Trace: Meloni Giorgia (0 votes)",
+                col = "#377EB8", ylab = "Ideal Point")
+```
+
+### Sensitivity to Bill Prior Specification
+
+Following Jackman (2001),^[Jackman, S. (2001). Multidimensional Analysis of
+Roll Call Data via Bayesian Simulation. *Political Analysis*, 9(3), 227–241.
+https://doi.org/10.1093/polana/9.3.227] we assess sensitivity to the bill
+prior variance $\sigma^2_\beta$ by running three short chains under different
+specifications: Tight ($\sigma^2_\beta = 1$), Default ($\sigma^2_\beta = 25$),
+and Flat ($\sigma^2_\beta = 625$). If the data are sufficiently informative,
+ideal point estimates should be stable across specifications.
+As can be seen below, tighter priors on $\beta_j$ compress the discrimination
+parameters toward zero, which in turn shrinks the estimated spread of ideal
+points symmetrically — pulling both left-leaning and right-leaning parties
+toward the center. Crucially, however, this compression is approximately
+uniform across the political spectrum: the rank ordering of parties and their
+relative distances are preserved across all three specifications. We therefore
+conclude that the choice of $\sigma^2_\beta$ does not materially affect the
+substantive conclusions, at least with respect to the inter-party positional
+comparisons that are the primary object of our analysis.
+
+```{r plot-c-19, fig.width=12, fig.height=5, fig.cap="Each point is one legislator. Points on the dashed identity line are unaffected by prior choice."}
+ideal_comp_19 <- data.frame(
+  legis.name = rownames(id_1_19$xbar),
+  Tight      = as.numeric(id_1_19$xbar[, 1]),
+  Default    = as.numeric(id_2_19$xbar[, 1]),
+  Flat       = as.numeric(id_3_19$xbar[, 1]),
+  stringsAsFactors = FALSE
+)
+ideal_comp_19 <- merge(ideal_comp_19, data19[, c("legis.name", "partito")],
+                       by = "legis.name", all.x = TRUE)
+
+p_c1_19 <- ggplot(ideal_comp_19, aes(x = Tight, y = Default, color = partito)) +
+  geom_point(alpha = 0.5, size = 1.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_smooth(method = "lm", se = FALSE, color = "red",
+              linewidth = 0.8, aes(group = 1)) +
+  scale_color_manual(values = master_colors, guide = "none") +
+  theme_minimal() +
+  labs(title = "Tight (Var=1) vs Default (Var=25)",
+       x = "Ideal Point (Tight)", y = "Ideal Point (Default)")
+
+p_c2_19 <- ggplot(ideal_comp_19, aes(x = Default, y = Flat, color = partito)) +
+  geom_point(alpha = 0.5, size = 1.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_smooth(method = "lm", se = FALSE, color = "red",
+              linewidth = 0.8, aes(group = 1)) +
+  scale_color_manual(values = master_colors) +
+  theme_minimal() +
+  labs(title = "Default (Var=25) vs Flat (Var=625)",
+       x = "Ideal Point (Default)", y = "Ideal Point (Flat)")
+
+p_c1_19 + p_c2_19 +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom") &
+  plot_annotation(
+    title    = "Sensitivity to Bill Prior Specification — XIX Legislature",
+    subtitle = "Dashed line: identity | Red line: OLS fit")
+```
+
+### Data, Uncertainty and Precision
+
+
+Another point of interest is convergence under low participation. To examine how
+well the model characterises legislators with few recorded votes, we identify the
+three least active members for each party and plot their 95% credible intervals.
+
+Legislators with few votes have posteriors dominated by the prior, yielding wide
+and potentially uninformative estimates. What we observe below, however, is a
+clear separation of the main parliamentary blocs even in this low-information
+setting. Coherently with the current political environment, the model
+distinguishes a solid and cohesive right-wing bloc from a more heterogeneous
+left, reflecting the asymmetry in party discipline discussed above. Two members
+of the right-wing bloc do display very wide credible intervals positioned on the
+left side of the scale, suggesting their posteriors are almost entirely
+prior-dominated a consequence of near-complete absence from the chamber.
+
+```{r plot-b-19, fig.height=8, fig.cap="Grey circle size = 95% CI half-width. Colored dot = posterior mean. The vertical line marks the ideological centre."}
+ci_df_19 <- data.frame(
+  legis.name = rownames(id_19$xbar),
+  mean       = as.numeric(id_19$xbar[, 1]),
+  lower      = apply(id_19$x[, , 1], 2, quantile, 0.025),
+  upper      = apply(id_19$x[, , 1], 2, quantile, 0.975),
+  stringsAsFactors = FALSE
+)
+ci_df_19$ci_width <- ci_df_19$upper - ci_df_19$lower
+
+votes_per_leg_19 <- rowSums(!is.na(rc_19$votes))
+votes_df_19 <- data.frame(
+  legis.name = names(votes_per_leg_19),
+  n_votes    = as.numeric(votes_per_leg_19),
+  stringsAsFactors = FALSE
+)
+ci_df_19 <- merge(ci_df_19, data19[, c("legis.name", "partito")],
+                  by = "legis.name", all.x = TRUE)
+ci_df_19 <- merge(ci_df_19, votes_df_19, by = "legis.name", all.x = TRUE)
+
+low_voters_19 <- ci_df_19 %>%
+  group_by(partito) %>%
+  slice_min(order_by = n_votes, n = 3, with_ties = FALSE) %>%
+  ungroup()
+
+set.seed(42)
+low_voters_19$y_jitter <- as.numeric(as.factor(low_voters_19$partito)) +
+  runif(nrow(low_voters_19), -0.2, 0.2)
+
+ci_scale <- 15
+
+ggplot(low_voters_19) +
+  geom_vline(xintercept = 0, linewidth = 1.2, color = "black") +
+  geom_point(aes(x = mean, y = y_jitter, size = ci_width * ci_scale),
+             color = "grey70", alpha = 0.4) +
+  geom_point(aes(x = mean, y = y_jitter, color = partito), size = 2.5) +
+  scale_color_manual(values = master_colors) +
+  scale_size_identity() +
+  scale_y_continuous(
+    breaks = seq_along(levels(as.factor(low_voters_19$partito))),
+    labels = levels(as.factor(low_voters_19$partito))) +
+  theme_minimal() +
+  labs(title    = "Posterior Uncertainty — 3 Least-Voting Members per Party (XIX)",
+       subtitle = "Grey circle radius = 95% CI half-width | Colored dot = posterior mean",
+       x = "← Left          Right →", y = "", color = "Party") +
+  guides(size = "none") +
+  theme(legend.position = "bottom")
+```
+
+To further discuss the relationship between the richness of data and confidence intervals 
+below we picture the 95% CI width against the number of votes cast. 
+The relationship is consistent with expectations: legislators with
+very few recorded votes display substantially wider credible intervals, as their
+posteriors remain prior-dominated. Beyond a moderate participation threshold,
+however, additional votes contribute diminishing returns to precision — CI width
+stabilises and the relationship flattens. The slight upward curvature can be imputed
+to loess edge effects. 
+
+```{r plot-h-19, fig.cap="Each point is one legislator. The black LOESS curve shows the average relationship between vote count and posterior precision across the full chamber."}
+ci_all_19 <- data.frame(
+  legis.name = rownames(id_19$xbar),
+  mean       = as.numeric(id_19$xbar[, 1]),
+  lower      = apply(id_19$x[, , 1], 2, quantile, 0.025),
+  upper      = apply(id_19$x[, , 1], 2, quantile, 0.975),
+  stringsAsFactors = FALSE
+)
+ci_all_19$ci_width <- ci_all_19$upper - ci_all_19$lower
+ci_all_19 <- merge(ci_all_19, votes_df_19, by = "legis.name", all.x = TRUE)
+ci_all_19 <- merge(ci_all_19, data19[, c("legis.name", "partito")],
+                   by = "legis.name", all.x = TRUE)
+
+ggplot(ci_all_19, aes(x = n_votes, y = ci_width)) +
+  geom_point(aes(color = partito), alpha = 0.5, size = 1.8) +
+  geom_smooth(method = "loess", se = FALSE, 
+              color = "black", linewidth = 0.8) +
+  scale_color_manual(values = master_colors) +
+  theme_minimal() +
+  labs(title    = "Posterior Precision vs Data Availability — XIX Legislature",
+       subtitle = "More votes → narrower credible interval",
+       x = "Number of Votes Cast", y = "95% CI Width", color = "Party") +
+  theme(legend.position = "bottom")
+```
+
+---
+
+## Results: XVIII Legislature (2018–2022)
+
+The XVIII legislature presents a considerably noisier picture. Three
+distinct governments formed over its course: the M5S-Lega coalition
+(June 2018 – September 2019), the M5S-PD-IV coalition under Conte II
+(September 2019 – February 2021), and the broad technocratic government
+under Mario Draghi (February 2021 – October 2022). This instability means
+that the left-right signal in the vote record is substantially noisier than
+in the XIX legislature, as the same party (most notably M5S) voted with very
+different coalitions at different points in time.
+
+```{r load-18, cache=TRUE}
+load("session_18.RData")
+load("sensitivity_18.RData")
+
+parties_18 <- sort(unique(data18$partito))
+party_colors_18 <- setNames(
+  scales::viridis_pal(option = "turbo")(length(parties_18)),
+  parties_18
+)
+```
+
+### Ideological Distribution
+
+```{r plot-a-18, fig.cap="Posterior mean ideal points for all XVIII legislature members."}
+plot_df_18 <- data.frame(
+  legis.name = rownames(id_18$xbar),
+  Estimate   = as.numeric(id_18$xbar[, 1]),
+  stringsAsFactors = FALSE
+)
+plot_df_18 <- merge(plot_df_18, data18[, c("legis.name", "partito")],
+                    by = "legis.name", all.x = TRUE)
+
+set.seed(42)
+ggplot(plot_df_18, aes(x = Estimate, y = 0, color = partito)) +
+  geom_jitter(size = 2, alpha = 0.65, height = 0.15) +
+  geom_hline(yintercept = 0, linetype = "dotted", color = "gray50") +
+  geom_vline(xintercept = 0, linewidth = 0.8, color = "black") +
+  scale_color_manual(values = party_colors_18) +
+  theme_minimal() +
+  labs(title    = "Ideological Distribution — XVIII Legislature",
+       subtitle = "Posterior means | Anchors: Fratoianni = -1, Lollobrigida = +1",
+       x = "← Left          Right →", y = "", color = "Party") +
+  theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(),
+        panel.grid.major.y = element_blank(), legend.position = "bottom")
+```
+
+### Bill Parameters
+
+```{r plot-d-18, fig.width=12, fig.height=5}
+beta_df_18 <- data.frame(
+  vote_id = 1:nrow(id_18$betabar),
+  beta    = id_18$betabar[, 1],
+  alpha   = id_18$betabar[, 2]
+)
+noisy_pct_18 <- round(mean(abs(beta_df_18$beta) < 0.5) * 100, 1)
+
+p_hist_18 <- ggplot(beta_df_18, aes(x = beta)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 50, fill = "steelblue", color = "white", alpha = 0.6) +
+  geom_density(color = "black", linewidth = 0.8, adjust = 1.5) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red", linewidth = 0.8) +
+  theme_minimal() +
+  labs(title    = "Distribution of β (XVIII)",
+       subtitle = paste0("Votes with |β| < 0.5: ", noisy_pct_18, "%"),
+       x = "β (Discrimination)", y = "Density")
+
+hull_idx_18 <- chull(beta_df_18$beta, beta_df_18$alpha)
+hull_df_18  <- beta_df_18[hull_idx_18, ]
+
+p_scatter_18 <- ggplot(beta_df_18, aes(x = beta, y = alpha)) +
+  geom_polygon(data = hull_df_18, fill = "steelblue", alpha = 0.15,
+               color = "steelblue", linewidth = 0.5) +
+  geom_point(alpha = 0.3, size = 1.2, color = "steelblue") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "red", linewidth = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red", linewidth = 0.6) +
+  theme_minimal() +
+  labs(title    = "β vs α (XVIII)",
+       subtitle = "Each point is one roll-call vote",
+       x = "β (Discrimination)", y = "α (Difficulty)")
+
+p_hist_18 + p_scatter_18
+```
+This legislature shows a substantially higher share of uninformative votes, with
+`r noisy_pct_18`% of bills having $|\beta| < 0.5$. The high share of near-zero discrimination parameters in this legislature may
+suggest the need for an additional ideological dimension beyond left-right —
+possibly reflecting the cross-cutting coalition dynamics that characterised the
+period.
+
+The shift of the M5S from a centrist to a left-leaning position across the two
+legislatures can be attributed not only to a genuine ideological realignment, but
+also to a statistical artefact of their governing alliance with the Lega: during
+that period, M5S voted in favour of bills anchored further to the center-right,
+which pulls their estimated ideal point toward the center in the XVIII legislature
+and exaggerates the apparent leftward shift when comparing across legislatures.
+
+
+### Convergence Diagnostics
+
+Convergence is substantially better in this legislature compared to the previous
+one, reflecting the larger number of votes available for estimation. Additionally,
+the alternation of governing coalitions across legislatures introduces greater
+variance in voting behaviour: legislators who shift between majority and
+opposition roles over time cast votes from both positions, providing richer
+ideological signal and allowing the model to place them more precisely on the
+left-right scale. This is further corroborated by the sensitivity to bill prior
+specification plot, where — although a slight pull toward the center remains —
+the relationship between tight and default prior estimates approaches the 45°
+line much more closely, indicating that the data are sufficiently informative to
+largely override the prior specification.
+
+```{r geweke-18, cache=TRUE}
+leg_18   <- as.mcmc(id_18$x[, , 1])
+beta_18  <- as.mcmc(id_18$beta[, , 1])
+alpha_18 <- as.mcmc(id_18$beta[, , 2])
+
+gw_leg_18   <- geweke.diag(leg_18)
+gw_beta_18  <- geweke.diag(beta_18)
+gw_alpha_18 <- geweke.diag(alpha_18)
+
+geweke_df_18 <- data.frame(
+  Parameter = c("Ideal Points", "β (Discrimination)", "α (Difficulty)"),
+  Total     = c(id_18$n, id_18$m, id_18$m),
+  Failed    = c(sum(abs(gw_leg_18$z)   > 1.96),
+                sum(abs(gw_beta_18$z)  > 1.96),
+                sum(abs(gw_alpha_18$z) > 1.96)),
+  Pass_Rate = paste0(round((1 - c(
+                mean(abs(gw_leg_18$z)   > 1.96),
+                mean(abs(gw_beta_18$z)  > 1.96),
+                mean(abs(gw_alpha_18$z) > 1.96))) * 100, 1), "%")
+)
+
+knitr::kable(geweke_df_18,
+             col.names = c("Parameter", "Total", "Failed (|Z| > 1.96)",
+                           "Pass Rate"),
+             caption = "Geweke Convergence Diagnostics — XVIII Legislature (1D)")
+```
+
+
+
+```{r plot-c-18, fig.width=12, fig.height=5}
+ideal_comp_18 <- data.frame(
+  legis.name = rownames(id_1_18$xbar),
+  Tight      = as.numeric(id_1_18$xbar[, 1]),
+  Default    = as.numeric(id_2_18$xbar[, 1]),
+  Flat       = as.numeric(id_3_18$xbar[, 1]),
+  stringsAsFactors = FALSE
+)
+ideal_comp_18 <- merge(ideal_comp_18, data18[, c("legis.name", "partito")],
+                       by = "legis.name", all.x = TRUE)
+
+p_c1_18 <- ggplot(ideal_comp_18, aes(x = Tight, y = Default, color = partito)) +
+  geom_point(alpha = 0.5, size = 1.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_smooth(method = "lm", se = FALSE, color = "red",
+              linewidth = 0.8, aes(group = 1)) +
+  scale_color_manual(values = party_colors_18, guide = "none") +
+  theme_minimal() +
+  labs(title = "Tight (Var=1) vs Default (Var=25)",
+       x = "Ideal Point (Tight)", y = "Ideal Point (Default)")
+
+p_c2_18 <- ggplot(ideal_comp_18, aes(x = Default, y = Flat, color = partito)) +
+  geom_point(alpha = 0.5, size = 1.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "gray50") +
+  geom_smooth(method = "lm", se = FALSE, color = "red",
+              linewidth = 0.8, aes(group = 1)) +
+  scale_color_manual(values = party_colors_18) +
+  theme_minimal() +
+  labs(title = "Default (Var=25) vs Flat (Var=625)",
+       x = "Ideal Point (Default)", y = "Ideal Point (Flat)")
+
+p_c1_18 + p_c2_18 +
+  plot_layout(guides = "collect") &
+  theme(legend.position = "bottom") &
+  plot_annotation(
+    title    = "Sensitivity to Bill Prior Specification — XVIII Legislature",
+    subtitle = "Dashed line: identity | Red line: OLS fit")
+```
+
+### Data, Uncertainty and Precision
+As expected, legislators with few recorded votes have their posteriors dominated
+by the prior, with ideal point estimates clustered near the center of the scale
+and very wide, overlapping credible intervals. For most of these MPs the model
+cannot meaningfully distinguish between individuals — a reminder that the
+estimates are informative at the party level, but should be interpreted
+cautiously at the individual level for low-participation legislators.
+
+The overall trend shown below is consistent with expectations: there is a clear
+negative relationship between the number of votes cast and the width of the
+credible interval, which flattens at around 100 votes — suggesting that beyond
+this threshold, additional votes contribute little further precision to the
+estimates.
+
+```{r plot-b-18, fig.height=8}
+ci_df_18 <- data.frame(
+  legis.name = rownames(id_18$xbar),
+  mean       = as.numeric(id_18$xbar[, 1]),
+  lower      = apply(id_18$x[, , 1], 2, quantile, 0.025),
+  upper      = apply(id_18$x[, , 1], 2, quantile, 0.975),
+  stringsAsFactors = FALSE
+)
+ci_df_18$ci_width <- ci_df_18$upper - ci_df_18$lower
+
+votes_per_leg_18 <- rowSums(!is.na(rc_18$votes))
+votes_df_18 <- data.frame(
+  legis.name = names(votes_per_leg_18),
+  n_votes    = as.numeric(votes_per_leg_18),
+  stringsAsFactors = FALSE
+)
+ci_df_18 <- merge(ci_df_18, data18[, c("legis.name", "partito")],
+                  by = "legis.name", all.x = TRUE)
+ci_df_18 <- merge(ci_df_18, votes_df_18, by = "legis.name", all.x = TRUE)
+
+low_voters_18 <- ci_df_18 %>%
+  group_by(partito) %>%
+  slice_min(order_by = n_votes, n = 3, with_ties = FALSE) %>%
+  ungroup()
+
+set.seed(42)
+low_voters_18$y_jitter <- as.numeric(as.factor(low_voters_18$partito)) +
+  runif(nrow(low_voters_18), -0.2, 0.2)
+
+ci_scale <- 15
+
+ggplot(low_voters_18) +
+  geom_vline(xintercept = 0, linewidth = 1.2, color = "black") +
+  geom_point(aes(x = mean, y = y_jitter, size = ci_width * ci_scale),
+             color = "grey70", alpha = 0.4) +
+  geom_point(aes(x = mean, y = y_jitter, color = partito), size = 2.5) +
+  scale_color_manual(values = party_colors_18) +
+  scale_size_identity() +
+  scale_y_continuous(
+    breaks = seq_along(levels(as.factor(low_voters_18$partito))),
+    labels = levels(as.factor(low_voters_18$partito))) +
+  theme_minimal() +
+  labs(title    = "Posterior Uncertainty — 3 Least-Voting Members per Party (XVIII)",
+       subtitle = "Grey circle radius = 95% CI half-width | Colored dot = posterior mean",
+       x = "← Left          Right →", y = "", color = "Party") +
+  guides(size = "none") +
+  theme(legend.position = "bottom")
+```
+
+
+```{r plot-h-18}
+ci_all_18 <- data.frame(
+  legis.name = rownames(id_18$xbar),
+  mean       = as.numeric(id_18$xbar[, 1]),
+  lower      = apply(id_18$x[, , 1], 2, quantile, 0.025),
+  upper      = apply(id_18$x[, , 1], 2, quantile, 0.975),
+  stringsAsFactors = FALSE
+)
+ci_all_18$ci_width <- ci_all_18$upper - ci_all_18$lower
+ci_all_18 <- merge(ci_all_18, votes_df_18, by = "legis.name", all.x = TRUE)
+ci_all_18 <- merge(ci_all_18, data18[, c("legis.name", "partito")],
+                   by = "legis.name", all.x = TRUE)
+
+ggplot(ci_all_18, aes(x = n_votes, y = ci_width, color = partito)) +
+  geom_point(alpha = 0.5, size = 1.8) +
+  geom_smooth(method = "loess", se = FALSE, color = "black",
+              linewidth = 0.8, aes(group = 1)) +
+  scale_color_manual(values = party_colors_18) +
+  theme_minimal() +
+  labs(title    = "Posterior Precision vs Data Availability — XVIII Legislature",
+       subtitle = "More votes → narrower credible interval",
+       x = "Number of Votes Cast", y = "95% CI Width", color = "Party") +
+  theme(legend.position = "bottom")
+```
+
+---
+
+## Cross-Legislature Analysis: Party Switchers
+
+Legislators present in both the XVIII and XIX legislatures who changed party
+affiliation offer a unique opportunity to assess whether the model captures
+individual ideology or merely party-line voting. If ideal points are stable
+across legislatures despite party changes, it suggests the estimates reflect
+genuine individual preferences. If they shift substantially, it may indicate
+that voting behaviour — and therefore estimated ideal points — is driven more
+by coalition dynamics than individual ideology.
+
+Since both legislatures use the same anchors (Fratoianni = $-1$,
+Lollobrigida = $+1$), the two scales are directly comparable.
+
+```{r plot-g, fig.height=20, fig.cap="Grey dot = XVIII position. Arrow tip = XIX position. Legislators sorted by magnitude of shift."}
+ip_18 <- data.frame(
+  legis.name = rownames(id_18$xbar),
+  ip_18      = as.numeric(id_18$xbar[, 1]),
+  stringsAsFactors = FALSE
+)
+
+ip_19 <- data.frame(
+  legis.name = rownames(id_19$xbar),
+  ip_19      = as.numeric(id_19$xbar[, 1]),
+  stringsAsFactors = FALSE
+)
+
+party_18 <- data18[, c("legis.name", "partito")] %>%
+  rename(partito_18 = partito) %>% distinct()
+party_19 <- data19[, c("legis.name", "partito")] %>%
+  rename(partito_19 = partito) %>% distinct()
+
+switchers <- party_18 %>%
+  inner_join(party_19, by = "legis.name") %>%
+  filter(partito_18 != partito_19) %>%
+  inner_join(ip_18, by = "legis.name") %>%
+  inner_join(ip_19, by = "legis.name") %>%
+  mutate(delta     = ip_19 - ip_18,
+         direction = ifelse(delta > 0, "Moved Right", "Moved Left"),
+         abs_delta = abs(delta)) %>%
+  arrange(desc(abs_delta))
+
+switchers$label <- paste0(switchers$legis.name, "\n(",
+                           switchers$partito_18, " → ",
+                           switchers$partito_19, ")")
+ci_18 <- data.frame(
+  legis.name = rownames(id_18$xbar),
+  lower_18   = apply(id_18$x[, , 1], 2, quantile, 0.025),
+  upper_18   = apply(id_18$x[, , 1], 2, quantile, 0.975),
+  stringsAsFactors = FALSE
+)
+
+switchers <- switchers %>%
+  inner_join(ci_18, by = "legis.name") %>%
+  # Primary: XIX position must fall outside XVIII 95% CI
+  filter(ip_19 < lower_18 | ip_19 > upper_18) 
+  
+ggplot(switchers) +
+  geom_segment(aes(x = ip_18, xend = ip_19,
+                   y = reorder(label, delta), yend = reorder(label, delta),
+                   color = direction),
+               arrow = arrow(length = unit(0.25, "cm"), type = "closed"),
+               linewidth = 0.9) +
+  geom_point(aes(x = ip_18, y = reorder(label, delta)),
+             shape = 16, size = 2.5, color = "gray40") +
+  geom_vline(xintercept = 0, linewidth = 1, color = "black") +
+  scale_color_manual(values = c("Moved Right" = "#E41A1C",
+                                "Moved Left"  = "#377EB8")) +
+  theme_minimal() +
+  labs(title    = "Ideal Point Shift for Party Switchers (XVIII → XIX)",
+       subtitle = "Grey dot = XVIII position | Arrow tip = XIX position",
+       x = "← Left          Right →", y = "", color = "Direction") +
+  theme(legend.position    = "bottom",
+        axis.text.y        = element_text(size = 8),
+        panel.grid.major.y = element_line(color = "gray90"))
+```
+
+
+
+---
+
+## Conclusions {#Conclusions}
+Due to strong party whipping, the estimation of ideal points for Italian
+legislators is considerably more challenging than in the US context, where
+members of Congress have historically enjoyed greater freedom in their voting
+behaviour — though increasing polarisation has reduced this in recent years.
+Nevertheless, the model remains a valid tool for extracting aggregate party
+positions and inter-party distances, even when individual-level estimates are
+imprecise.
+
+The analysis above also highlights how data richness is critical for the
+reliable performance of simulation-based statistical tools: convergence,
+precision, and robustness to prior specification all improve substantially as
+the number of observed votes increases — even in the face of what might appear
+as noise, as the XVIII legislature illustrates.
