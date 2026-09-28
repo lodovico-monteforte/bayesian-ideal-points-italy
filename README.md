@@ -1,6 +1,6 @@
 # Bayesian Ideal Point Estimation of the Italian Chamber of Deputies
 
-Replication and extension of the Clinton, Jackman \& Rivers (2004) ideal point
+Replication of the Clinton, Jackman \& Rivers (2004) ideal point
 estimation framework applied to roll-call voting data from the Italian Chamber
 of Deputies (Camera dei Deputati), covering the XVIII (2018–2022) and XIX
 (2022–present) legislatures.
@@ -34,20 +34,20 @@ cross-legislature comparison of party switchers.
 ```
 bayesian-ideal-points-italy/
 │
-├── 01\_scraping\_18.py          # Scrapes XVIII roll-call data from dati.camera.it
-├── 01\_scraping\_19.py          # Scrapes XIX roll-call data from dati.camera.it
-├── 02\_preprocessing\_18.py     # Cleans and reshapes XVIII data into vote matrix
-├── 02\_preprocessing\_19.py     # Cleans and reshapes XIX data into vote matrix
+├── 01_scraping_18.py          # Scrapes XVIII roll-call data from dati.camera.it
+├── 01_scraping_19.py          # Scrapes XIX roll-call data from dati.camera.it
+├── 02_preprocessing_18.py     # Cleans and reshapes XVIII data into vote matrix
+├── 02_preprocessing_19.py     # Cleans and reshapes XIX data into vote matrix
 │
-├── 03\_mcmc\_18.R               # MCMC estimation for XVIII legislature
-├── 03\_mcmc\_19.R               # MCMC estimation for XIX legislature
-├── 04\_analysis\_18.R           # All plots for XVIII legislature
-├── 04\_analysis\_19.R           # All plots for XIX legislature
-├── 05\_switchers.R             # Cross-legislature party switcher analysis
+├── 03_mcmc_18.R               # MCMC estimation for XVIII legislature
+├── 03_mcmc_19.R               # MCMC estimation for XIX legislature
+├── 04_analysis_18.R           # All plots for XVIII legislature
+├── 04_analysis_19.R           # All plots for XIX legislature
+├── 05_switchers.R             # Cross-legislature party switcher analysis
 │
-├── Markdown\_File\_v2.Rmd       # Full analysis report (knits to index.html)
+├── Markdown_File_v2.Rmd       # Full analysis report (knits to index.html)
 ├── index.html                 # Rendered report — served via GitHub Pages
-├── index\_files/figure-html/   # Figures embedded in the rendered report
+├── index_files/figure-html/   # Figures embedded in the rendered report
 │
 ├── BAYESIAN REPLICA.Rproj     # RStudio project file
 └── README.md
@@ -130,7 +130,7 @@ source("03\_mcmc\_19.R")
 Outputs: `session\_18.RData`, `session\_19.RData`, `sensitivity\_18.RData`,
 `sensitivity\_19.RData`.
 
-> These scripts are intended to be run \*\*once\*\*. Results are saved to
+> These scripts are intended to be run once. Results are saved to
 > `.RData` files and loaded by all subsequent scripts.
 
 **5. Generate the plots** (loads saved sessions, no re-estimation)
