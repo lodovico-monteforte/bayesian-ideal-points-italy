@@ -4,6 +4,7 @@ author: "Lodovico Monteforte"
 date: "`r Sys.Date()`"
 output:
   html_document:
+    output_file: "index.html"
     code_folding: hide
     toc: true
     toc_float: true
@@ -317,8 +318,8 @@ ideology plays little role (near-zero $\beta$). Only `r noisy_pct_19`% of votes 
 $|\beta| < 0.5$, indicating that the 1D specification captures the vast majority of the
 ideological signal in the data.
 
-Figure X plots $\beta$ against $\alpha$. A large share of votes falls in the first
-quadrant, combining high discrimination with a Yea being the the majority-favored outcome. 
+The figure above plots $\beta$ against $\alpha$. A large share of votes falls in the first
+quadrant, combining high discrimination with a Yea being the majority-favored outcome. 
 This is coherent with the relative strength and cohesion of the current government.
 
 
@@ -441,6 +442,42 @@ p_c1_19 + p_c2_19 +
   plot_annotation(
     title    = "Sensitivity to Bill Prior Specification — XIX Legislature",
     subtitle = "Dashed line: identity | Red line: OLS fit")
+```
+
+```{r party-prior-table-19}
+party_prior_table_19 <- ideal_comp_19 %>%
+  group_by(partito) %>%
+  summarise(
+    Tight   = mean(Tight,   na.rm = TRUE),
+    Default = mean(Default, na.rm = TRUE),
+    Flat    = mean(Flat,    na.rm = TRUE),
+    n       = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(Default) %>%
+  mutate(
+    Rank_Tight   = rank(Tight),
+    Rank_Default = rank(Default),
+    Rank_Flat    = rank(Flat)
+  )
+
+rho_td_19     <- cor(party_prior_table_19$Rank_Tight, party_prior_table_19$Rank_Default, method = "spearman")
+rho_df_19     <- cor(party_prior_table_19$Rank_Default, party_prior_table_19$Rank_Flat,    method = "spearman")
+pearson_td_19 <- cor(party_prior_table_19$Tight,      party_prior_table_19$Default,      method = "pearson")
+pearson_df_19 <- cor(party_prior_table_19$Default,    party_prior_table_19$Flat,         method = "pearson")
+
+knitr::kable(
+  party_prior_table_19 %>%
+    select(partito, n, Tight, Default, Flat, Rank_Tight, Rank_Default, Rank_Flat),
+  digits = 2,
+  col.names = c("Party", "N", "Tight (Var=1)", "Default (Var=25)", "Flat (Var=625)",
+                "Rank (Tight)", "Rank (Default)", "Rank (Flat)"),
+  caption = paste0("Party mean ideal points under three bill-prior specifications — XIX. ",
+                    "Spearman rank correlation (ordering): Tight-Default = ", round(rho_td_19, 3),
+                    ", Default-Flat = ", round(rho_df_19, 3),
+                    ". Pearson correlation (relative distances): Tight-Default = ", round(pearson_td_19, 3),
+                    ", Default-Flat = ", round(pearson_df_19, 3), ".")
+)
 ```
 
 ### Data, Uncertainty and Precision
@@ -724,6 +761,43 @@ p_c1_18 + p_c2_18 +
     subtitle = "Dashed line: identity | Red line: OLS fit")
 ```
 
+```{r party-prior-table-18}
+party_prior_table_18 <- ideal_comp_18 %>%
+  group_by(partito) %>%
+  summarise(
+    Tight   = mean(Tight,   na.rm = TRUE),
+    Default = mean(Default, na.rm = TRUE),
+    Flat    = mean(Flat,    na.rm = TRUE),
+    n       = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(Default) %>%
+  mutate(
+    Rank_Tight   = rank(Tight),
+    Rank_Default = rank(Default),
+    Rank_Flat    = rank(Flat)
+  )
+
+rho_td_18 <- cor(party_prior_table_18$Rank_Tight,   party_prior_table_18$Rank_Default, method = "spearman")
+rho_df_18 <- cor(party_prior_table_18$Rank_Default, party_prior_table_18$Rank_Flat,    method = "spearman")
+
+pearson_td_18 <- cor(party_prior_table_18$Tight,   party_prior_table_18$Default, method = "pearson")
+pearson_df_18 <- cor(party_prior_table_18$Default, party_prior_table_18$Flat,    method = "pearson")
+
+knitr::kable(
+  party_prior_table_18 %>%
+    select(partito, n, Tight, Default, Flat, Rank_Tight, Rank_Default, Rank_Flat),
+  digits = 2,
+  col.names = c("Party", "N", "Tight (Var=1)", "Default (Var=25)", "Flat (Var=625)",
+                "Rank (Tight)", "Rank (Default)", "Rank (Flat)"),
+  caption = paste0("Party mean ideal points under three bill-prior specifications — XVIII. ",
+                   "Spearman rank correlation (ordering): Tight-Default = ", round(rho_td_18, 3),
+                   ", Default-Flat = ", round(rho_df_18, 3),
+                   ". Pearson correlation (relative distances): Tight-Default = ", round(pearson_td_18, 3),
+                   ", Default-Flat = ", round(pearson_df_18, 3), ".")
+)
+```
+
 ### Data, Uncertainty and Precision
 As expected, legislators with few recorded votes have their posteriors dominated
 by the prior, with ideal point estimates clustered near the center of the scale
@@ -822,11 +896,17 @@ affiliation offer a unique opportunity to assess whether the model captures
 individual ideology or merely party-line voting. If ideal points are stable
 across legislatures despite party changes, it suggests the estimates reflect
 genuine individual preferences. If they shift substantially, it may indicate
-that voting behaviour — and therefore estimated ideal points — is driven more
-by coalition dynamics than individual ideology.
+that voting behaviour is driven more by coalition dynamics than individual ideology.
 
-Since both legislatures use the same anchors (Fratoianni = $-1$,
-Lollobrigida = $+1$), the two scales are directly comparable.
+Both legislatures use the same anchors (Fratoianni = $-1$,
+Lollobrigida = $+1$), so movement is measured on a common scale. This
+does not by itself guarantee that the two distributions are directly
+comparable: if a party's position relative to the anchors shifted
+between legislatures a switcher's estimated shift mixes their own repositioning with their party's. The comparison below should be read with that caveat in
+mind. Moreover, not all legislators who changed party show a detectable
+shift once first-estimation uncertainty is taken into account; to
+partially address this, the plot is restricted to legislators whose XIX
+position falls outside their XVIII 95% credible interval.
 
 ```{r plot-g, fig.height=20, fig.cap="Grey dot = XVIII position. Arrow tip = XIX position. Legislators sorted by magnitude of shift."}
 ip_18 <- data.frame(
@@ -867,10 +947,16 @@ ci_18 <- data.frame(
 )
 
 switchers <- switchers %>%
-  inner_join(ci_18, by = "legis.name") %>%
+  inner_join(ci_18, by = "legis.name")
+
+n_switchers_total <- nrow(switchers)
+
+switchers <- switchers %>%
   # Primary: XIX position must fall outside XVIII 95% CI
-  filter(ip_19 < lower_18 | ip_19 > upper_18) 
-  
+  filter(ip_19 < lower_18 | ip_19 > upper_18)
+
+n_switchers_shown <- nrow(switchers)
+
 ggplot(switchers) +
   geom_segment(aes(x = ip_18, xend = ip_19,
                    y = reorder(label, delta), yend = reorder(label, delta),
@@ -891,21 +977,33 @@ ggplot(switchers) +
         panel.grid.major.y = element_line(color = "gray90"))
 ```
 
+`r n_switchers_total` legislators appear in both legislatures under a
+different party label; `r n_switchers_shown` of them have an XIX
+position that falls outside their XVIII 95% credible interval and are
+shown above.
 
-
+This comparison is descriptive rather than a formal test of whether
+switchers' movement reflects individual repositioning or coalition
+dynamics. A more direct test would regress each switcher's XIX ideal
+point on their origin and destination party means, computed leaving the
+switcher out, while controlling for their own XVIII position. Such a
+specification could separate individual persistence from party pull
+directly, and could be benchmarked against non-switchers. This is not
+pursued further here, since the small number of switchers identified in
+this dataset would severely limit the statistical power of such a test.
 ---
 
 ## Conclusions {#Conclusions}
 Due to strong party whipping, the estimation of ideal points for Italian
 legislators is considerably more challenging than in the US context, where
 members of Congress have historically enjoyed greater freedom in their voting
-behaviour — though increasing polarisation has reduced this in recent years.
+behavior, though even there increasing polarization has reduced this in recent years.
 Nevertheless, the model remains a valid tool for extracting aggregate party
 positions and inter-party distances, even when individual-level estimates are
 imprecise.
 
-The analysis above also highlights how data richness is critical for the
+The analysis above also highlights a common theme on statistics. The method notwithstanding data richness is critical for the
 reliable performance of simulation-based statistical tools: convergence,
 precision, and robustness to prior specification all improve substantially as
-the number of observed votes increases — even in the face of what might appear
+the number of observed votes increases, even in the face of what might appear
 as noise, as the XVIII legislature illustrates.

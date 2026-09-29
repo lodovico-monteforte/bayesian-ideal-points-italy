@@ -159,6 +159,35 @@ p_c1 + p_c2 +
   theme(legend.position = "bottom") &
   plot_annotation(title    = "Sensitivity to Bill Prior Specification — XIX Legislature",
                   subtitle = "Dashed line: identity | Red line: OLS fit")
+party_prior_table_19 <- ideal_comp_19 %>%
+  group_by(partito) %>%
+  summarise(
+    Tight   = mean(Tight,   na.rm = TRUE),
+    Default = mean(Default, na.rm = TRUE),
+    Flat    = mean(Flat,    na.rm = TRUE),
+    n       = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(Default) %>%
+  mutate(
+    Rank_Tight   = rank(Tight),
+    Rank_Default = rank(Default),
+    Rank_Flat    = rank(Flat)
+  )
+
+# Spearman: is the rank ordering of parties preserved across priors?
+rho_td_19 <- cor(party_prior_table_19$Rank_Tight,   party_prior_table_19$Rank_Default, method = "spearman")
+rho_df_19 <- cor(party_prior_table_19$Rank_Default, party_prior_table_19$Rank_Flat,    method = "spearman")
+
+# Pearson: do relative distances between parties scale proportionally across priors?
+pearson_td_19 <- cor(party_prior_table_19$Tight,   party_prior_table_19$Default, method = "pearson")
+pearson_df_19 <- cor(party_prior_table_19$Default, party_prior_table_19$Flat,    method = "pearson")
+
+cat("Spearman rank correlation (party means), Tight vs Default:", round(rho_td_19, 3), "\n")
+cat("Spearman rank correlation (party means), Default vs Flat: ", round(rho_df_19, 3), "\n")
+cat("Pearson correlation (party means), Tight vs Default:      ", round(pearson_td_19, 3), "\n")
+cat("Pearson correlation (party means), Default vs Flat:       ", round(pearson_df_19, 3), "\n")
+
 
 ###############################################################################
 # PLOT D — Beta Distribution

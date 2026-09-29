@@ -167,6 +167,36 @@ p_c1 + p_c2 +
                   subtitle = "Dashed line: identity | Red line: OLS fit")
 
 ###############################################################################
+# PARTY MEANS UNDER DIFFERENT PRIORS
+###############################################################################
+party_prior_table_18 <- ideal_comp_18 %>%
+  group_by(partito) %>%
+  summarise(
+    Tight   = mean(Tight,   na.rm = TRUE),
+    Default = mean(Default, na.rm = TRUE),
+    Flat    = mean(Flat,    na.rm = TRUE),
+    n       = n(),
+    .groups = "drop"
+  ) %>%
+  arrange(Default) %>%
+  mutate(
+    Rank_Tight   = rank(Tight),
+    Rank_Default = rank(Default),
+    Rank_Flat    = rank(Flat)
+  )
+
+rho_td_18 <- cor(party_prior_table_18$Rank_Tight,   party_prior_table_18$Rank_Default, method = "spearman")
+rho_df_18 <- cor(party_prior_table_18$Rank_Default, party_prior_table_18$Rank_Flat,    method = "spearman")
+
+pearson_td_18 <- cor(party_prior_table_18$Tight,   party_prior_table_18$Default, method = "pearson")
+pearson_df_18 <- cor(party_prior_table_18$Default, party_prior_table_18$Flat,    method = "pearson")
+
+cat("Spearman rank correlation (party means), Tight vs Default:", round(rho_td_18, 3), "\n")
+cat("Spearman rank correlation (party means), Default vs Flat: ", round(rho_df_18, 3), "\n")
+cat("Pearson correlation (party means), Tight vs Default:      ", round(pearson_td_18, 3), "\n")
+cat("Pearson correlation (party means), Default vs Flat:       ", round(pearson_df_18, 3), "\n")
+
+###############################################################################
 # PLOT D — Beta Distribution
 ###############################################################################
 
